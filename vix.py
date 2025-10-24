@@ -29,6 +29,10 @@ p_max = st.sidebar.slider("ARIMA p 最大值", 0, 5, 2)
 d_max = st.sidebar.slider("ARIMA d 最大值", 0, 2, 1)
 q_max = st.sidebar.slider("ARIMA q 最大值", 0, 5, 2)
 
+# 图表优化参数
+st.sidebar.header("图表优化")
+ma_window = st.sidebar.slider("移动平均窗口期 (用于趋势线)", 3, 20, 5)
+
 # 简单策略说明
 st.sidebar.markdown("""
 ### 策略逻辑
@@ -39,13 +43,14 @@ st.sidebar.markdown("""
 
 # 函数：获取实时数据
 @st.cache_data(ttl=refresh_interval)
-def fetch_data(sp500_trend_days):
+def fetch_data(sp500_trend_days, ma_window):
     # 获取 VIX (^VIX) - 分钟数据用于图表和预测
     vix = yf.Ticker("^VIX").history(period="1d", interval="1m")
     if not vix.empty:
         current_vix = vix['Close'].iloc[-1]
         vix_df = vix[['Close']].copy()
         vix_df.columns = ['VIX']
+        vix_df['VIX_MA'] = vix_df['VIX'].rolling(window=ma_window, min_periods=1).mean()
     else:
         current_vix = None
         vix_df = pd.DataFrame()
@@ -55,6 +60,7 @@ def fetch_data(sp500_trend_days):
     if not sp500_min.empty:
         sp500_df = sp500_min[['Close']].copy()
         sp500_df.columns = ['SP500']
+        sp500_df['SP500_MA'] = sp500_df['SP500'].rolling(window=ma_window, min_periods=1).mean()
     else:
         sp500_df = pd.DataFrame()
     
@@ -73,6 +79,7 @@ def fetch_data(sp500_trend_days):
         current_tsla = tsla['Close'].iloc[-1]
         tsla_df = tsla[['Close']].copy()
         tsla_df.columns = ['TSLA']
+        tsla_df['TSLA_MA'] = tsla_df['TSLA'].rolling(window=ma_window, min_periods=1).mean()
     else:
         current_tsla = None
         tsla_df = pd.DataFrame()
@@ -137,7 +144,7 @@ def predict_next_vix(vix_df, enable_grid=True, p_max=2, d_max=1, q_max=2):
 placeholder = st.empty()
 
 while True:
-    data = fetch_data(sp500_trend_days)
+    data = fetch_data(sp500_trend_days, ma_window)
     
     with placeholder.container():
         # 显示当前时间
@@ -155,19 +162,19 @@ while True:
         # SP500 趋势
         st.metric("SP500 趋势 (%)", f"{data['sp500_trend']:.2f}%")
         
-        # VIX 实时走势图
+        # VIX 实时走势图（添加MA趋势线）
         if not data['vix_df'].empty:
-            st.subheader("VIX 实时走势图 (最近1天分钟数据)")
+            st.subheader(f"VIX 实时走势图 (最近1天分钟数据，MA{ma_window}趋势线)")
             st.line_chart(data['vix_df'])
         
-        # SP500 实时走势图
+        # SP500 实时走势图（添加MA趋势线）
         if not data['sp500_df'].empty:
-            st.subheader("SP500 实时走势图 (最近1天分钟数据)")
+            st.subheader(f"SP500 实时走势图 (最近1天分钟数据，MA{ma_window}趋势线)")
             st.line_chart(data['sp500_df'])
         
-        # TSLA 实时走势图
+        # TSLA 实时走势图（添加MA趋势线）
         if not data['tsla_df'].empty:
-            st.subheader("TSLA 实时走势图 (最近1天分钟数据)")
+            st.subheader(f"TSLA 实时走势图 (最近1天分钟数据，MA{ma_window}趋势线)")
             st.line_chart(data['tsla_df'])
         
         # VIX 下一分钟预测（优化版）
@@ -214,5 +221,6 @@ st.markdown("""
 2. 运行程序：`streamlit run this_script.py`
 3. 程序将每 X 秒自动刷新数据（yfinance 提供近实时数据，延迟约 1-5 分钟）。
 4. **VIX 预测优化**：启用动态网格搜索以自动选择最佳 ARIMA 参数，提高预测准确度（基于当前数据的最低 AIC）。可调整参数范围以平衡速度与准确度。
-5. **注意**：这仅为教育性示例，非投资建议。实际交易需谨慎，考虑风险。ARIMA 适合短期预测，但市场波动性高，准确度有限。
+5. **图表改进**：添加可调节窗口期的移动平均线 (MA) 趋势线，帮助突出当前趋势方向。调整窗口期以平滑不同程度的趋势。
+6. **注意**：这仅为教育性示例，非投资建议。实际交易需谨慎，考虑风险。ARIMA 适合短期预测，但市场波动性高，准确度有限。
 """)
