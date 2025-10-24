@@ -5,6 +5,9 @@ import time
 from datetime import datetime
 import numpy as np
 from statsmodels.tsa.arima.model import ARIMA
+from itertools import product
+import warnings
+warnings.filterwarnings('ignore')
 
 # 页面标题
 st.title("VIX & SP500 实时监控与 TSLA 买卖建议")
@@ -21,7 +24,10 @@ sp500_trend_days = st.sidebar.slider("SP500 趋势天数", 5, 20, 10)
 
 # 预测参数
 st.sidebar.header("VIX 预测参数")
-arima_order = (1, 1, 1)  # ARIMA(p,d,q) 参数，可调整
+enable_grid_search = st.sidebar.checkbox("启用动态参数优化 (ARIMA网格搜索)", value=True)
+p_max = st.sidebar.slider("ARIMA p 最大值", 0, 5, 2)
+d_max = st.sidebar.slider("ARIMA d 最大值", 0, 2, 1)
+q_max = st.sidebar.slider("ARIMA q 最大值", 0, 5, 2)
 
 # 简单策略说明
 st.sidebar.markdown("""
@@ -82,22 +88,50 @@ def fetch_data(sp500_trend_days):
         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
 
-# 函数：VIX 下一分钟预测
-def predict_next_vix(vix_df, order=arima_order):
-    if len(vix_df) < 10:  # 需要足够数据点
+# 函数：VIX 下一分钟预测（优化版：动态网格搜索最佳参数）
+def predict_next_vix(vix_df, enable_grid=True, p_max=2, d_max=1, q_max=2):
+    if len(vix_df) < 20:  # 需要足够数据点
         return None, "数据不足，无法预测"
     
-    try:
-        # 使用 ARIMA 模型预测
-        model = ARIMA(vix_df['VIX'], order=order)
-        model_fit = model.fit()
-        forecast = model_fit.forecast(steps=1)
-        next_vix = forecast.iloc[0]
-        confidence_interval = model_fit.get_forecast(steps=1).conf_int().iloc[0].to_dict()
+    vix_series = vix_df['VIX'].dropna()
+    
+    if enable_grid:
+        # 动态网格搜索最佳ARIMA参数
+        p_range = range(0, p_max + 1)
+        d_range = range(0, d_max + 1)
+        q_range = range(0, q_max + 1)
+        param_combinations = list(product(p_range, d_range, q_range))
         
-        return next_vix, f"预测值: {next_vix:.2f} (95% CI: {confidence_interval['lower VIX']:.2f} - {confidence_interval['upper VIX']:.2f})"
-    except Exception as e:
-        return None, f"预测错误: {str(e)}"
+        best_aic = float("inf")
+        best_order = None
+        best_forecast = None
+        
+        for order in param_combinations:
+            try:
+                model = ARIMA(vix_series, order=order)
+                fitted_model = model.fit()
+                if fitted_model.aic < best_aic:
+                    best_aic = fitted_model.aic
+                    best_order = order
+                    forecast = fitted_model.forecast(steps=1)
+                    best_forecast = forecast.iloc[0]
+            except:
+                continue
+        
+        if best_forecast is not None:
+            return best_forecast, f"最佳参数: ARIMA{best_order} (AIC: {best_aic:.2f})"
+        else:
+            return None, "网格搜索无有效模型"
+    else:
+        # 回退到固定参数
+        order = (1, 1, 1)
+        try:
+            model = ARIMA(vix_series, order=order)
+            fitted_model = model.fit()
+            forecast = fitted_model.forecast(steps=1)
+            return forecast.iloc[0], f"固定参数: ARIMA{order}"
+        except Exception as e:
+            return None, f"预测错误: {str(e)}"
 
 # 主循环：实时更新
 placeholder = st.empty()
@@ -136,12 +170,13 @@ while True:
             st.subheader("TSLA 实时走势图 (最近1天分钟数据)")
             st.line_chart(data['tsla_df'])
         
-        # VIX 下一分钟预测
-        next_vix, pred_msg = predict_next_vix(data['vix_df'])
+        # VIX 下一分钟预测（优化版）
+        next_vix, pred_msg = predict_next_vix(data['vix_df'], enable_grid_search, p_max, d_max, q_max)
         if next_vix is not None:
             delta = next_vix - data['vix']
             trend = "上涨" if delta > 0 else "下跌" if delta < 0 else "持平"
             st.metric(f"下一分钟 VIX 预测 ({trend})", f"{next_vix:.2f}", f"{delta:+.2f}")
+            st.info(pred_msg)
         else:
             st.warning(pred_msg)
         
@@ -178,6 +213,6 @@ st.markdown("""
 1. 安装依赖：`pip install streamlit yfinance pandas numpy statsmodels`
 2. 运行程序：`streamlit run this_script.py`
 3. 程序将每 X 秒自动刷新数据（yfinance 提供近实时数据，延迟约 1-5 分钟）。
-4. **VIX 预测**：使用简单 ARIMA 模型基于最近分钟数据预测下一分钟值，仅供参考，非准确预测。
-5. **注意**：这仅为教育性示例，非投资建议。实际交易需谨慎，考虑风险。
+4. **VIX 预测优化**：启用动态网格搜索以自动选择最佳 ARIMA 参数，提高预测准确度（基于当前数据的最低 AIC）。可调整参数范围以平衡速度与准确度。
+5. **注意**：这仅为教育性示例，非投资建议。实际交易需谨慎，考虑风险。ARIMA 适合短期预测，但市场波动性高，准确度有限。
 """)
