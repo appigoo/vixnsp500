@@ -47,6 +47,10 @@ corr_window = st.sidebar.slider("相关性计算窗口 (分钟)", 5, 30, 5)
 st.sidebar.header("图表优化")
 ma_window = st.sidebar.slider("移动平均窗口期 (用于趋势线)", 3, 20, 5)
 
+# 调试选项
+st.sidebar.header("调试")
+debug_mode = st.sidebar.checkbox("启用调试模式 (显示数据长度等信息)", value=False)
+
 # 简单策略说明
 st.sidebar.markdown("""
 ### 策略逻辑
@@ -125,7 +129,7 @@ def fetch_data(sp500_trend_days, ma_window, corr_window):
 
 # 函数：VIX 下一分钟预测（优化版：动态网格搜索最佳参数）
 def predict_next_vix(vix_df, enable_grid=True, p_max=2, d_max=1, q_max=2):
-    if len(vix_df) < 20:  # 需要足够数据点
+    if len(vix_df) < 5:  # 降低阈值以便在数据不足时测试
         return None, "数据不足，无法预测"
     
     vix_series = vix_df['VIX'].dropna()
@@ -170,7 +174,7 @@ def predict_next_vix(vix_df, enable_grid=True, p_max=2, d_max=1, q_max=2):
 
 # 函数：TSLA 多步 ARIMA 预测（类似 VIX，支持多步）
 def predict_tsla_arima(tsla_df, steps=5, enable_grid=True, p_max=2, d_max=1, q_max=2):
-    if len(tsla_df) < 20:  # 需要足够数据点
+    if len(tsla_df) < 5:  # 降低阈值以便在数据不足时测试
         return None, None, "数据不足，无法预测"
     
     tsla_series = tsla_df['TSLA'].dropna()
@@ -262,6 +266,11 @@ while True:
         # 显示当前时间
         st.metric("更新时间", data['timestamp'])
         
+        # 调试信息
+        if debug_mode:
+            st.write(f"TSLA 数据长度: {len(data['tsla_df'])}")
+            st.write(f"VIX 数据长度: {len(data['vix_df'])}")
+        
         # 显示指标（包含实时升跌幅）
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -294,6 +303,8 @@ while True:
             st.subheader(f"TSLA 实时走势图 (最近1天分钟数据，MA{ma_window}趋势线)")
             st.line_chart(data['tsla_df'])
             st.caption(f"TSLA 当日变化: {data['tsla_change_pct']:+.2f}% (相对于开盘)")
+        else:
+            st.warning("TSLA 数据为空，请检查市场时间或网络连接。")
         
         # VIX 下一分钟预测（优化版）
         next_vix, pred_msg = predict_next_vix(data['vix_df'], enable_grid_search_vix, p_max_vix, d_max_vix, q_max_vix)
@@ -306,26 +317,29 @@ while True:
             st.warning(pred_msg)
         
         # TSLA 多步 ARIMA 预测（类似 VIX，支持多步）
-        tsla_forecast, tsla_arima_msg, tsla_error = predict_tsla_arima(data['tsla_df'], tsla_forecast_steps, enable_grid_search_tsla, p_max_tsla, d_max_tsla, q_max_tsla)
-        if tsla_forecast is not None and tsla_error is None:
-            # 显示整体趋势
-            overall_delta = tsla_forecast.iloc[-1] - data['tsla']
-            overall_trend = "上涨" if overall_delta > 0 else "下跌" if overall_delta < 0 else "持平"
-            st.metric(f"{tsla_forecast_steps}分钟 TSLA ARIMA 预测 ({overall_trend})", f"{tsla_forecast.iloc[-1]:.2f}", f"{overall_delta:+.2f}")
-            st.info(tsla_arima_msg)
-            
-            # 显示预测图表
-            st.subheader(f"TSLA ARIMA 多步预测 (未来 {tsla_forecast_steps} 分钟)")
-            forecast_df = pd.DataFrame({
-                '分钟': range(1, tsla_forecast_steps + 1),
-                '预测价格': tsla_forecast.values
-            })
-            st.line_chart(forecast_df.set_index('分钟'))
+        if not data['tsla_df'].empty:
+            tsla_forecast, tsla_arima_msg, tsla_error = predict_tsla_arima(data['tsla_df'], tsla_forecast_steps, enable_grid_search_tsla, p_max_tsla, d_max_tsla, q_max_tsla)
+            if tsla_forecast is not None and tsla_error is None:
+                # 显示整体趋势
+                overall_delta = tsla_forecast.iloc[-1] - data['tsla']
+                overall_trend = "上涨" if overall_delta > 0 else "下跌" if overall_delta < 0 else "持平"
+                st.metric(f"{tsla_forecast_steps}分钟 TSLA ARIMA 预测 ({overall_trend})", f"{tsla_forecast.iloc[-1]:.2f}", f"{overall_delta:+.2f}")
+                st.info(tsla_arima_msg)
+                
+                # 显示预测图表
+                st.subheader(f"TSLA ARIMA 多步预测 (未来 {tsla_forecast_steps} 分钟)")
+                forecast_df = pd.DataFrame({
+                    '分钟': range(1, tsla_forecast_steps + 1),
+                    '预测价格': tsla_forecast.values
+                })
+                st.line_chart(forecast_df.set_index('分钟'))
+            else:
+                st.warning(tsla_error or tsla_arima_msg)
         else:
-            st.warning(tsla_error or tsla_arima_msg)
+            st.warning("TSLA 数据为空，无法进行 ARIMA 预测")
         
         # TSLA 下一分钟相关性预测（基于VIX-TSLA）
-        if enable_tsla_corr_predict:
+        if enable_tsla_corr_predict and next_vix is not None:
             next_tsla_corr, tsla_corr_msg = predict_next_tsla(data['vix_df'], data['tsla_df'], next_vix, corr_window)
             if next_tsla_corr is not None:
                 delta_tsla_corr = next_tsla_corr - data['tsla']
@@ -334,6 +348,11 @@ while True:
                 st.info(tsla_corr_msg)
             else:
                 st.warning(tsla_corr_msg)
+        else:
+            if not enable_tsla_corr_predict:
+                st.info("相关性预测已禁用")
+            else:
+                st.warning("VIX 预测失败，无法进行相关性预测")
         
         # 买卖建议
         suggestion = "持有"
@@ -373,5 +392,6 @@ st.markdown("""
 6. **TSLA 相关性预测**：基于前N分钟VIX和TSLA升跌幅的相关性，使用线性回归（OLS）预测下一分钟TSLA价格。相关性计算使用Pearson系数，Beta为回归斜率。
 7. **图表改进**：添加可调节窗口期的移动平均线 (MA) 趋势线，帮助突出当前趋势方向。调整窗口期以平滑不同程度的趋势。
 8. **实时数据与升跌幅**：在指标和图表下方显示相对于当天开盘的实时升跌百分比，便于快速识别趋势。
-9. **注意**：这仅为教育性示例，非投资建议。实际交易需谨慎，考虑风险。预测模型基于历史短期数据，市场波动性高，准确度有限。多步预测累积误差可能更大。
+9. **调试模式**：启用后显示数据长度等信息，帮助诊断问题（如数据不足）。
+10. **注意**：这仅为教育性示例，非投资建议。实际交易需谨慎，考虑风险。预测模型基于历史短期数据，市场波动性高，准确度有限。多步预测累积误差可能更大。如果在非交易时间运行，数据可能为空，导致预测不显示。
 """)
