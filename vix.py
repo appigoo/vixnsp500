@@ -1,208 +1,107 @@
-# streamlit_vix_sp500_tsla_signal_fixed.py
-# 修正版：更健壮的 fetch_data，已修复之前的 SyntaxError 并改进数据校验
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-from datetime import datetime, timezone
+import time
+from datetime import datetime
 
-st.set_page_config(page_title="VIX & S&P500 → TSLA Signal", layout="wide")
+# 页面标题
+st.title("VIX & SP500 实时监控与 TSLA 买卖建议")
 
-st.title("实时监控：VIX、S&P500 与 TSLA 买/卖 建议（修正版）")
-st.markdown("示例策略，仅供学习。")
+# 用户输入部分：API 或直接使用 yfinance（无需密钥）
+st.sidebar.header("设置")
+refresh_interval = st.sidebar.slider("刷新间隔（秒）", 10, 300, 60)
 
-# --------------------
-# User controls
-# --------------------
-col1, col2, col3 = st.columns([1,1,1])
-with col1:
-    refresh_seconds = st.number_input("自动刷新秒数（0 关闭）", min_value=0, value=0, step=10)
-with col2:
-    history_days = st.number_input("用于计算均线/指标的历史天数", min_value=30, max_value=3650, value=180, step=30)
-with col3:
-    vix_threshold_sell = st.number_input("VIX 卖出阈值", min_value=5.0, value=25.0, step=0.5)
+# 策略参数
+st.sidebar.header("买卖策略参数")
+vix_threshold_high = st.sidebar.slider("VIX 高阈值（恐慌卖出）", 15.0, 50.0, 30.0)
+vix_threshold_low = st.sidebar.slider("VIX 低阈值（安全买入）", 10.0, 25.0, 15.0)
+sp500_trend_days = st.sidebar.slider("SP500 趋势天数", 5, 20, 10)
 
-positionsize = st.slider("建议最大仓位占净值比例（模拟）", min_value=1, max_value=100, value=10)
+# 简单策略说明
+st.sidebar.markdown("""
+### 策略逻辑
+- **买入建议**：VIX < 低阈值 且 SP500 过去 N 天上涨 > 2%。
+- **卖出建议**：VIX > 高阈值 或 SP500 过去 N 天下跌 > 2%。
+- **持有**：其他情况。
+""")
 
-if refresh_seconds > 0:
-    try:
-        from streamlit_autorefresh import st_autorefresh
-        # call it; it will rerun app automatically
-        count = st_autorefresh(interval=refresh_seconds * 1000, limit=None)
-    except Exception:
-        st.info("自动刷新需要 'streamlit-autorefresh' 包；已禁用自动刷新，请手动刷新页面。")
+# 函数：获取实时数据
+@st.cache_data(ttl=refresh_interval)
+def fetch_data():
+    # 获取 VIX (^VIX)
+    vix = yf.Ticker("^VIX").history(period="1d", interval="1m")
+    current_vix = vix['Close'].iloc[-1] if not vix.empty else None
+    
+    # 获取 SP500 (^GSPC)
+    sp500 = yf.Ticker("^GSPC").history(period=f"{sp500_trend_days + 1}d", interval="1d")
+    current_sp500 = sp500['Close'].iloc[-1] if not sp500.empty else None
+    sp500_trend = ((sp500['Close'].iloc[-1] - sp500['Close'].iloc[0]) / sp500['Close'].iloc[0]) * 100
+    
+    # 获取 TSLA 当前价（用于参考）
+    tsla = yf.Ticker("TSLA").history(period="1d", interval="1m")
+    current_tsla = tsla['Close'].iloc[-1] if not tsla.empty else None
+    
+    return {
+        'vix': current_vix,
+        'sp500': current_sp500,
+        'sp500_trend': sp500_trend,
+        'tsla': current_tsla,
+        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
 
-# --------------------
-# Robust data fetcher
-# --------------------
-@st.cache_data(ttl=30)
-def fetch_data(ticker: str, period_days: int = 180):
-    # request extra days for moving averages
-    period_str = f"{max(period_days + 30, 60)}d"
-    data = yf.download(ticker, period=period_str, interval='1d', progress=False)
-    if data is None or data.empty:
-        return pd.DataFrame()
+# 主循环：实时更新
+placeholder = st.empty()
 
-    # Normalize column names: prefer 'Adj Close' if present, else 'Close'.
-    cols = [c.lower() for c in data.columns]
+while True:
+    data = fetch_data()
+    
+    with placeholder.container():
+        # 显示当前时间
+        st.metric("更新时间", data['timestamp'])
+        
+        # 显示指标
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("VIX 指数", f"{data['vix']:.2f}" if data['vix'] else "N/A")
+        with col2:
+            st.metric("SP500 指数", f"{data['sp500']:.2f}" if data['sp500'] else "N/A")
+        with col3:
+            st.metric("TSLA 股价", f"{data['tsla']:.2f}" if data['tsla'] else "N/A")
+        
+        # SP500 趋势
+        st.metric("SP500 趋势 (%)", f"{data['sp500_trend']:.2f}%")
+        
+        # 买卖建议
+        suggestion = "持有"
+        color = "off"
+        
+        if data['vix'] > vix_threshold_high:
+            suggestion = "🚨 卖出 TSLA"
+            color = "inverse"
+        elif data['vix'] < vix_threshold_low and data['sp500_trend'] > 2:
+            suggestion = "💰 买入 TSLA"
+            color = "normal"
+        elif data['sp500_trend'] < -2:
+            suggestion = "⚠️ 卖出 TSLA"
+            color = "inverse"
+        
+        st.error(suggestion) if "卖出" in suggestion else st.success(suggestion) if "买入" in suggestion else st.info(suggestion)
+        
+        # 数据表格（最近趋势）
+        if 'sp500' in data:
+            recent_sp500 = yf.Ticker("^GSPC").history(period=f"{sp500_trend_days}d")
+            st.subheader("SP500 最近趋势")
+            st.dataframe(recent_sp500.tail(5), use_container_width=True)
+    
+    time.sleep(refresh_interval)
+    st.rerun()
 
-    # Try to map possible column names to canonical names
-    # We'll create a DataFrame with at least 'Adj Close' or 'Close' as 'Adj Close'
-    df = data.copy()
-    # If 'Adj Close' exists, keep it; else if only 'Close' exists, copy to 'Adj Close'
-    if 'Adj Close' in df.columns:
-        pass
-    elif 'Close' in df.columns:
-        df['Adj Close'] = df['Close']
-    else:
-        # Unlikely, but bail out
-        return pd.DataFrame()
-
-    # Ensure we have numeric index of datetimes
-    df.index = pd.to_datetime(df.index)
-
-    # Keep only the columns we need if they exist
-    wanted = ['Open','High','Low','Close','Adj Close','Volume']
-    kept = [c for c in wanted if c in df.columns]
-    df = df[kept]
-
-    # Some tickers (like ^VIX) may not have Volume/Open/High/Low - that's fine
-    return df
-
-# --------------------
-# Fetch data
-# --------------------
-with st.spinner("拉取行情中..."):
-    vix_df = fetch_data('^VIX', period_days=int(history_days))
-    spx_df = fetch_data('^GSPC', period_days=int(history_days))
-    tsla_df = fetch_data('TSLA', period_days=int(history_days))
-
-last_update = datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')
-st.sidebar.metric("最后更新时间", last_update)
-
-if vix_df.empty or spx_df.empty or tsla_df.empty:
-    st.error("部分数据拉取失败（可能 yfinance 在当前环境受限或标的返回列结构不同）。请检查网络或尝试增加 period_days。")
-    st.stop()
-
-# --------------------
-# Indicators
-# --------------------
-def add_indicators(df):
-    df = df.copy()
-    # ensure Adj Close exists
-    if 'Adj Close' not in df.columns:
-        if 'Close' in df.columns:
-            df['Adj Close'] = df['Close']
-        else:
-            df['Adj Close'] = np.nan
-    df['ret'] = df['Adj Close'].pct_change()
-    df['ma5'] = df['Adj Close'].rolling(5).mean()
-    df['ma20'] = df['Adj Close'].rolling(20).mean()
-    df['ma50'] = df['Adj Close'].rolling(50).mean()
-    df['vol10'] = df['ret'].rolling(10).std() * np.sqrt(252)
-    return df
-
-vix_df = add_indicators(vix_df)
-spx_df = add_indicators(spx_df)
-tsla_df = add_indicators(tsla_df)
-
-# Recent values (safely)
-vix_now = float(vix_df['Adj Close'].iloc[-1])
-spx_now = float(spx_df['Adj Close'].iloc[-1])
-tsla_now = float(tsla_df['Adj Close'].iloc[-1])
-
-vix_5d_change = (vix_df['Adj Close'].iloc[-1] / vix_df['Adj Close'].iloc[-6] - 1) if len(vix_df) >= 6 else np.nan
-spx_ma5 = spx_df['ma5'].iloc[-1] if not np.isnan(spx_df['ma5'].iloc[-1]) else spx_df['Adj Close'].iloc[-1]
-spx_ma20 = spx_df['ma20'].iloc[-1] if not np.isnan(spx_df['ma20'].iloc[-1]) else spx_df['Adj Close'].rolling(20).mean().iloc[-1]
-tsla_ma20 = tsla_df['ma20'].iloc[-1]
-
-# --------------------
-# Signal logic
-# --------------------
-signal = 'HOLD'
-confidence = 'Low'
-reason = []
-
-if (vix_now >= vix_threshold_sell) or (not np.isnan(vix_5d_change) and vix_5d_change > 0.15 and spx_now < spx_ma20):
-    signal = 'STRONG SELL'
-    confidence = 'High'
-    reason.append(f"VIX={vix_now:.2f} >= {vix_threshold_sell}")
-elif (vix_now > 20) and (spx_ma5 < spx_ma20):
-    signal = 'SELL'
-    confidence = 'Medium'
-    reason.append(f"VIX={vix_now:.2f} > 20 且 SPX MA5 < MA20")
-elif (vix_now < 15) and (spx_ma5 > spx_ma20) and (tsla_now > tsla_ma20):
-    signal = 'BUY'
-    confidence = 'Medium'
-    reason.append(f"VIX={vix_now:.2f} < 15 且 SPX 趋势向上 且 TSLA > MA20")
-else:
-    signal = 'HOLD'
-    confidence = 'Low'
-    reason.append('未满足明确买卖条件')
-
-if signal == 'BUY':
-    suggested_size = f"可建仓约 {positionsize}% 的净值（模拟），建议分批进场"
-elif signal in ['SELL','STRONG SELL']:
-    suggested_size = "建议减少或清仓；如需防守可考虑买入保护性看跌期权"
-else:
-    suggested_size = "建议观望"
-
-# --------------------
-# UI
-# --------------------
-colA, colB, colC, colD = st.columns(4)
-colA.metric("VIX", f"{vix_now:.2f}", delta=f"{vix_df['Adj Close'].pct_change().iloc[-1]*100:.2f}%")
-colB.metric("S&P500", f"{spx_now:.2f}", delta=f"{spx_df['Adj Close'].pct_change().iloc[-1]*100:.2f}%")
-colC.metric("TSLA", f"{tsla_now:.2f}", delta=f"{tsla_df['Adj Close'].pct_change().iloc[-1]*100:.2f}%")
-colD.metric("建议信号", signal, delta=f"信心水平: {confidence}")
-
-st.markdown("### 生成信号的理由")
-st.write("; ".join(reason))
-st.markdown("**仓位建议**")
-st.write(suggested_size)
-
-# --------------------
-# Charts
-# --------------------
-lookback = int(min(len(tsla_df), history_days))
-
-chart_col1, chart_col2 = st.columns([2,1])
-with chart_col1:
-    st.subheader('价格与均线：TSLA 与 S&P500')
-    fig, ax = plt.subplots(2,1, figsize=(10,6), sharex=True)
-    ax[0].plot(tsla_df.index[-lookback:], tsla_df['Adj Close'].iloc[-lookback:], label='TSLA')
-    ax[0].plot(tsla_df.index[-lookback:], tsla_df['ma20'].iloc[-lookback:], label='TSLA MA20')
-    ax[0].set_ylabel('TSLA'); ax[0].legend()
-    ax[1].plot(spx_df.index[-lookback:], spx_df['Adj Close'].iloc[-lookback:], label='S&P500')
-    ax[1].plot(spx_df.index[-lookback:], spx_df['ma20'].iloc[-lookback:], label='SPX MA20')
-    ax[1].set_ylabel('SPX'); ax[1].legend()
-    st.pyplot(fig)
-
-with chart_col2:
-    st.subheader('VIX 与 历史波动')
-    fig2, ax2 = plt.subplots(2,1, figsize=(5,6), sharex=True)
-    ax2[0].plot(vix_df.index[-lookback:], vix_df['Adj Close'].iloc[-lookback:], label='VIX')
-    ax2[0].axhline(15, linestyle='--'); ax2[0].axhline(20, linestyle=':')
-    ax2[0].set_ylabel('VIX'); ax2[0].legend()
-    ax2[1].plot(tsla_df.index[-lookback:], tsla_df['vol10'].iloc[-lookback:], label='TSLA vol (10d)')
-    ax2[1].set_ylabel('Vol'); ax2[1].legend()
-    st.pyplot(fig2)
-
-# --------------------
-# Data & download
-# --------------------
-st.markdown('---')
-st.subheader('原始数据（最近若干行）')
-display_df = pd.concat([
-    vix_df['Adj Close'].rename('VIX').tail(lookback),
-    spx_df['Adj Close'].rename('SPX').tail(lookback),
-    tsla_df['Adj Close'].rename('TSLA').tail(lookback)
-], axis=1)
-st.dataframe(display_df)
-
-csv = display_df
-st.download_button('下载CSV（最近数据）', csv.tail(lookback).to_csv().encode('utf-8'), file_name='vix_spx_tsla.csv')
-
-st.markdown('---')
-st.caption('策略示例：仅演示如何结合 VIX 与 SPX 给出 TSLA 的简易买卖建议。真实交易请回测并设置风控。')
+# 运行说明
+st.markdown("---")
+st.markdown("""
+### 运行说明
+1. 安装依赖：`pip install streamlit yfinance pandas`
+2. 运行程序：`streamlit run this_script.py`
+3. 程序将每 X 秒自动刷新数据（yfinance 提供近实时数据，延迟约 1-5 分钟）。
+4. **注意**：这仅为教育性示例，非投资建议。实际交易需谨慎，考虑风险。
+""")
