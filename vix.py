@@ -61,9 +61,15 @@ def fetch_data(sp500_trend_days):
         current_sp500 = None
         sp500_trend = 0.0
     
-    # 获取 TSLA 当前价（用于参考）
+    # 获取 TSLA - 分钟数据用于图表和当前价
     tsla = yf.Ticker("TSLA").history(period="1d", interval="1m")
-    current_tsla = tsla['Close'].iloc[-1] if not tsla.empty else None
+    if not tsla.empty:
+        current_tsla = tsla['Close'].iloc[-1]
+        tsla_df = tsla[['Close']].copy()
+        tsla_df.columns = ['TSLA']
+    else:
+        current_tsla = None
+        tsla_df = pd.DataFrame()
     
     return {
         'vix': current_vix,
@@ -72,6 +78,7 @@ def fetch_data(sp500_trend_days):
         'sp500_df': sp500_df,
         'sp500_trend': sp500_trend,
         'tsla': current_tsla,
+        'tsla_df': tsla_df,
         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
 
@@ -123,6 +130,11 @@ while True:
         if not data['sp500_df'].empty:
             st.subheader("SP500 实时走势图 (最近1天分钟数据)")
             st.line_chart(data['sp500_df'])
+        
+        # TSLA 实时走势图
+        if not data['tsla_df'].empty:
+            st.subheader("TSLA 实时走势图 (最近1天分钟数据)")
+            st.line_chart(data['tsla_df'])
         
         # VIX 下一分钟预测
         next_vix, pred_msg = predict_next_vix(data['vix_df'])
