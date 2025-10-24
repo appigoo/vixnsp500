@@ -6,6 +6,7 @@ from datetime import datetime
 import numpy as np
 from statsmodels.tsa.arima.model import ARIMA
 from itertools import product
+import statsmodels.api as sm
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -29,6 +30,11 @@ p_max = st.sidebar.slider("ARIMA p 最大值", 0, 5, 2)
 d_max = st.sidebar.slider("ARIMA d 最大值", 0, 2, 1)
 q_max = st.sidebar.slider("ARIMA q 最大值", 0, 5, 2)
 
+# TSLA 预测参数
+st.sidebar.header("TSLA 预测参数")
+enable_tsla_predict = st.sidebar.checkbox("启用基于VIX-TSLA相关性的TSLA预测", value=True)
+corr_window = st.sidebar.slider("相关性计算窗口 (分钟)", 5, 30, 5)
+
 # 图表优化参数
 st.sidebar.header("图表优化")
 ma_window = st.sidebar.slider("移动平均窗口期 (用于趋势线)", 3, 20, 5)
@@ -43,7 +49,7 @@ st.sidebar.markdown("""
 
 # 函数：获取实时数据
 @st.cache_data(ttl=refresh_interval)
-def fetch_data(sp500_trend_days, ma_window):
+def fetch_data(sp500_trend_days, ma_window, corr_window):
     # 获取 VIX (^VIX) - 分钟数据用于图表和预测
     vix = yf.Ticker("^VIX").history(period="1d", interval="1m")
     if not vix.empty:
@@ -154,11 +160,50 @@ def predict_next_vix(vix_df, enable_grid=True, p_max=2, d_max=1, q_max=2):
         except Exception as e:
             return None, f"预测错误: {str(e)}"
 
+# 函数：基于VIX-TSLA前N分钟升跌幅相关性预测下一分钟TSLA
+def predict_next_tsla(vix_df, tsla_df, next_vix, corr_window):
+    if len(vix_df) < corr_window or len(tsla_df) < corr_window or next_vix is None:
+        return None, "数据不足，无法预测"
+    
+    # 取最近corr_window个数据点
+    recent_vix = vix_df.tail(corr_window)['VIX']
+    recent_tsla = tsla_df.tail(corr_window)['TSLA']
+    
+    # 计算分钟级百分比变化
+    vix_pct = recent_vix.pct_change().dropna()
+    tsla_pct = recent_tsla.pct_change().dropna()
+    
+    if len(vix_pct) < 2 or len(tsla_pct) < 2:
+        return None, "变化数据不足，无法计算相关性"
+    
+    # 计算相关系数
+    correlation = vix_pct.corr(tsla_pct)
+    
+    # 使用简单线性回归：TSLA_pct ~ VIX_pct
+    X = sm.add_constant(vix_pct.values)
+    model = sm.OLS(tsla_pct.values, X).fit()
+    beta = model.params[1]  # 斜率
+    
+    # 预测VIX下一分钟变化（百分比）
+    current_vix = vix_df['VIX'].iloc[-1]
+    vix_delta_pct = ((next_vix - current_vix) / current_vix) * 100 if current_vix != 0 else 0
+    
+    # 预测TSLA变化（百分比）
+    tsla_delta_pct = beta * vix_delta_pct
+    
+    # 预测TSLA价格
+    current_tsla = tsla_df['TSLA'].iloc[-1]
+    next_tsla = current_tsla * (1 + tsla_delta_pct / 100)
+    
+    pred_msg = f"相关性: {correlation:.3f}, Beta: {beta:.3f}, VIX变化预测: {vix_delta_pct:+.2f}%"
+    
+    return next_tsla, pred_msg
+
 # 主循环：实时更新
 placeholder = st.empty()
 
 while True:
-    data = fetch_data(sp500_trend_days, ma_window)
+    data = fetch_data(sp500_trend_days, ma_window, corr_window)
     
     with placeholder.container():
         # 显示当前时间
@@ -207,6 +252,17 @@ while True:
         else:
             st.warning(pred_msg)
         
+        # TSLA 下一分钟预测（基于VIX-TSLA相关性）
+        if enable_tsla_predict:
+            next_tsla, tsla_pred_msg = predict_next_tsla(data['vix_df'], data['tsla_df'], next_vix, corr_window)
+            if next_tsla is not None:
+                delta_tsla = next_tsla - data['tsla']
+                trend_tsla = "上涨" if delta_tsla > 0 else "下跌" if delta_tsla < 0 else "持平"
+                st.metric(f"下一分钟 TSLA 预测 ({trend_tsla})", f"{next_tsla:.2f}", f"{delta_tsla:+.2f}")
+                st.info(tsla_pred_msg)
+            else:
+                st.warning(tsla_pred_msg)
+        
         # 买卖建议
         suggestion = "持有"
         
@@ -241,7 +297,8 @@ st.markdown("""
 2. 运行程序：`streamlit run this_script.py`
 3. 程序将每 X 秒自动刷新数据（yfinance 提供近实时数据，延迟约 1-5 分钟）。
 4. **VIX 预测优化**：启用动态网格搜索以自动选择最佳 ARIMA 参数，提高预测准确度（基于当前数据的最低 AIC）。可调整参数范围以平衡速度与准确度。
-5. **图表改进**：添加可调节窗口期的移动平均线 (MA) 趋势线，帮助突出当前趋势方向。调整窗口期以平滑不同程度的趋势。
-6. **实时数据与升跌幅**：在指标和图表下方显示相对于当天开盘的实时升跌百分比，便于快速识别趋势。
-7. **注意**：这仅为教育性示例，非投资建议。实际交易需谨慎，考虑风险。ARIMA 适合短期预测，但市场波动性高，准确度有限。
+5. **TSLA 预测**：基于前N分钟VIX和TSLA升跌幅的相关性，使用线性回归（OLS）预测下一分钟TSLA价格。相关性计算使用Pearson系数，Beta为回归斜率。
+6. **图表改进**：添加可调节窗口期的移动平均线 (MA) 趋势线，帮助突出当前趋势方向。调整窗口期以平滑不同程度的趋势。
+7. **实时数据与升跌幅**：在指标和图表下方显示相对于当天开盘的实时升跌百分比，便于快速识别趋势。
+8. **注意**：这仅为教育性示例，非投资建议。实际交易需谨慎，考虑风险。预测模型基于历史短期相关性，市场波动性高，准确度有限。
 """)
