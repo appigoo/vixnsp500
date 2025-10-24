@@ -27,15 +27,19 @@ st.sidebar.markdown("""
 
 # 函数：获取实时数据
 @st.cache_data(ttl=refresh_interval)
-def fetch_data():
+def fetch_data(sp500_trend_days):
     # 获取 VIX (^VIX)
     vix = yf.Ticker("^VIX").history(period="1d", interval="1m")
     current_vix = vix['Close'].iloc[-1] if not vix.empty else None
     
     # 获取 SP500 (^GSPC)
     sp500 = yf.Ticker("^GSPC").history(period=f"{sp500_trend_days + 1}d", interval="1d")
-    current_sp500 = sp500['Close'].iloc[-1] if not sp500.empty else None
-    sp500_trend = ((sp500['Close'].iloc[-1] - sp500['Close'].iloc[0]) / sp500['Close'].iloc[0]) * 100
+    if not sp500.empty:
+        current_sp500 = sp500['Close'].iloc[-1]
+        sp500_trend = ((sp500['Close'].iloc[-1] - sp500['Close'].iloc[0]) / sp500['Close'].iloc[0]) * 100
+    else:
+        current_sp500 = None
+        sp500_trend = 0.0
     
     # 获取 TSLA 当前价（用于参考）
     tsla = yf.Ticker("TSLA").history(period="1d", interval="1m")
@@ -53,7 +57,7 @@ def fetch_data():
 placeholder = st.empty()
 
 while True:
-    data = fetch_data()
+    data = fetch_data(sp500_trend_days)
     
     with placeholder.container():
         # 显示当前时间
@@ -73,25 +77,26 @@ while True:
         
         # 买卖建议
         suggestion = "持有"
-        color = "off"
         
-        if data['vix'] > vix_threshold_high:
+        if data['vix'] is not None and data['vix'] > vix_threshold_high:
             suggestion = "🚨 卖出 TSLA"
-            color = "inverse"
-        elif data['vix'] < vix_threshold_low and data['sp500_trend'] > 2:
+        elif data['vix'] is not None and data['vix'] < vix_threshold_low and data['sp500_trend'] > 2:
             suggestion = "💰 买入 TSLA"
-            color = "normal"
         elif data['sp500_trend'] < -2:
             suggestion = "⚠️ 卖出 TSLA"
-            color = "inverse"
         
-        st.error(suggestion) if "卖出" in suggestion else st.success(suggestion) if "买入" in suggestion else st.info(suggestion)
+        # 使用 if-elif 显示建议
+        if "卖出" in suggestion:
+            st.error(suggestion)
+        elif "买入" in suggestion:
+            st.success(suggestion)
+        else:
+            st.info(suggestion)
         
         # 数据表格（最近趋势）
-        if 'sp500' in data:
-            recent_sp500 = yf.Ticker("^GSPC").history(period=f"{sp500_trend_days}d")
-            st.subheader("SP500 最近趋势")
-            st.dataframe(recent_sp500.tail(5), width='stretch')
+        recent_sp500 = yf.Ticker("^GSPC").history(period=f"{sp500_trend_days}d")
+        st.subheader("SP500 最近趋势")
+        st.dataframe(recent_sp500.tail(5), width='stretch')
     
     time.sleep(refresh_interval)
     st.rerun()
