@@ -40,7 +40,7 @@ positionsize = st.slider("建议最大仓位占净值比例（模拟）", min_va
 if refresh_seconds > 0:
     try:
         from streamlit_autorefresh import st_autorefresh
-n        # call it; it will rerun app automatically
+        # call it; it will rerun app automatically
         count = st_autorefresh(interval=refresh_seconds * 1000, limit=None)
     except Exception:
         # fallback: show a note and provide manual refresh
