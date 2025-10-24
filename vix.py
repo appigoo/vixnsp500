@@ -44,7 +44,15 @@ def fetch_data(sp500_trend_days):
         current_vix = None
         vix_df = pd.DataFrame()
     
-    # 获取 SP500 (^GSPC)
+    # 获取 SP500 (^GSPC) - 分钟数据用于图表
+    sp500_min = yf.Ticker("^GSPC").history(period="1d", interval="1m")
+    if not sp500_min.empty:
+        sp500_df = sp500_min[['Close']].copy()
+        sp500_df.columns = ['SP500']
+    else:
+        sp500_df = pd.DataFrame()
+    
+    # 获取 SP500 日数据用于趋势计算
     sp500 = yf.Ticker("^GSPC").history(period=f"{sp500_trend_days + 1}d", interval="1d")
     if not sp500.empty:
         current_sp500 = sp500['Close'].iloc[-1]
@@ -61,6 +69,7 @@ def fetch_data(sp500_trend_days):
         'vix': current_vix,
         'vix_df': vix_df,
         'sp500': current_sp500,
+        'sp500_df': sp500_df,
         'sp500_trend': sp500_trend,
         'tsla': current_tsla,
         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -109,6 +118,11 @@ while True:
         if not data['vix_df'].empty:
             st.subheader("VIX 实时走势图 (最近1天分钟数据)")
             st.line_chart(data['vix_df'])
+        
+        # SP500 实时走势图
+        if not data['sp500_df'].empty:
+            st.subheader("SP500 实时走势图 (最近1天分钟数据)")
+            st.line_chart(data['sp500_df'])
         
         # VIX 下一分钟预测
         next_vix, pred_msg = predict_next_vix(data['vix_df'])
