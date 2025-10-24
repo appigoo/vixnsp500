@@ -50,38 +50,55 @@ def safe_last(df, col):
     return df[col].iloc[-1] if not df.empty and col in df.columns and len(df) > 0 else None
 
 def get_d_order(series, max_d=2):
+    """自动确定差分阶数 d，兼容 statsmodels ≥ 0.14"""
     d = 0
     temp = series.copy()
     for _ in range(max_d + 1):
-        if len(temp.dropna()) < 10: break
-        pval = adfuller(temp.dropna(), max_lags=1)[1]
-        if pval < 0.05: return d
+        if len(temp.dropna()) < 10:
+            break
+        try:
+            result = adfuller(temp.dropna(), autolag='AIC')  # 自动选择滞后
+            if result[1] < 0.05:  # p < 0.05，平稳
+                return d
+        except Exception as e:
+            if debug_mode:
+                st.caption(f"ADF 检验失败: {e}")
+            break
         temp = temp.diff().dropna()
         d += 1
     return min(d, max_d)
 
 def arima_grid_search(series, p_max, d_max, q_max, steps=1):
-    """统一网格搜索，返回最佳模型和预测"""
-    if len(series) < 10: return None, None, "数据不足"
+    """统一网格搜索，返回最佳预测、order、msg"""
+    if len(series) < 10:
+        return None, None, "数据不足（<10）"
+    
     d_opt = get_d_order(series, d_max)
     best_aic = float('inf')
-    best_model = None
     best_forecast = None
     best_order = None
+    best_msg = "无有效模型"
+
     p_range = range(0, p_max + 1)
     d_range = [d_opt]
     q_range = range(0, q_max + 1)
+
     for p, d, q in product(p_range, d_range, q_range):
         try:
             model = ARIMA(series, order=(p, d, q))
             fitted = model.fit()
             if fitted.aic < best_aic:
                 best_aic = fitted.aic
-                best_model = fitted
                 best_order = (p, d, q)
                 best_forecast = fitted.forecast(steps=steps)
-        except: continue
-    return best_forecast, best_order, f"ARIMA{best_order} (AIC: {best_aic:.1f})" if best_forecast is not None else None
+        except:
+            continue
+
+    if best_forecast is not None:
+        best_msg = f"ARIMA{best_order} (AIC: {best_aic:.1f})"
+        return best_forecast, best_order, best_msg
+
+    return None, None, best_msg
 
 # ==================== 数据获取 ====================
 def fetch_data():
@@ -92,26 +109,29 @@ def fetch_data():
         tsla = yf.Ticker("TSLA").history(period="1d", interval="1m")
 
         # VIX
-        vix_df = vix[['Close']].copy()
-        vix_df.columns = ['VIX']
-        vix_df['VIX_MA'] = vix_df['VIX'].rolling(ma_window, min_periods=1).mean()
+        vix_df = vix[['Close']].copy() if not vix.empty else pd.DataFrame()
+        if not vix_df.empty:
+            vix_df.columns = ['VIX']
+            vix_df['VIX_MA'] = vix_df['VIX'].rolling(ma_window, min_periods=1).mean()
         current_vix = safe_last(vix_df, 'VIX')
         vix_open = vix['Open'].iloc[0] if not vix.empty else None
         vix_change = ((current_vix - vix_open) / vix_open) * 100 if vix_open and vix_open != 0 else 0
 
         # SP500
-        sp500_df = sp500_min[['Close']].copy()
-        sp500_df.columns = ['SP500']
-        sp500_df['SP500_MA'] = sp500_df['SP500'].rolling(ma_window, min_periods=1).mean()
+        sp500_df = sp500_min[['Close']].copy() if not sp500_min.empty else pd.DataFrame()
+        if not sp500_df.empty:
+            sp500_df.columns = ['SP500']
+            sp500_df['SP500_MA'] = sp500_df['SP500'].rolling(ma_window, min_periods=1).mean()
         current_sp500 = safe_last(sp500_df, 'SP500')
         sp500_open = sp500_min['Open'].iloc[0] if not sp500_min.empty else None
         sp500_change = ((current_sp500 - sp500_open) / sp500_open) * 100 if sp500_open else 0
         sp500_trend = ((sp500_day['Close'].iloc[-1] - sp500_day['Close'].iloc[0]) / sp500_day['Close'].iloc[0]) * 100 if len(sp500_day) > 1 else 0
 
         # TSLA
-        tsla_df = tsla[['Close']].copy()
-        tsla_df.columns = ['TSLA']
-        tsla_df['TSLA_MA'] = tsla_df['TSLA'].rolling(ma_window, min_periods=1).mean()
+        tsla_df = tsla[['Close']].copy() if not tsla.empty else pd.DataFrame()
+        if not tsla_df.empty:
+            tsla_df.columns = ['TSLA']
+            tsla_df['TSLA_MA'] = tsla_df['TSLA'].rolling(ma_window, min_periods=1).mean()
         current_tsla = safe_last(tsla_df, 'TSLA')
         tsla_open = tsla['Open'].iloc[0] if not tsla.empty else None
         tsla_change = ((current_tsla - tsla_open) / tsla_open) * 100 if tsla_open else 0
@@ -130,12 +150,12 @@ def fetch_data():
 # ==================== 预测函数 ====================
 def predict_next_vix(vix_df):
     series = vix_df['VIX'].dropna()
-    forecast, order, msg = arima_grid_search(series, p_max, d_max, q_max, steps=1)
+    forecast, _, msg = arima_grid_search(series, p_max, d_max, q_max, steps=1)
     return forecast.iloc[0] if forecast is not None else None, msg
 
 def predict_next_tsla_arima(tsla_df):
     series = tsla_df['TSLA'].dropna()
-    forecast, order, msg = arima_grid_search(series, p_max, d_max, q_max, steps=1)
+    forecast, _, msg = arima_grid_search(series, p_max, d_max, q_max, steps=1)
     return forecast.iloc[0] if forecast is not None else None, msg
 
 def predict_next_tsla_corr(vix_df, tsla_df, next_vix):
@@ -156,19 +176,21 @@ def predict_next_tsla_corr(vix_df, tsla_df, next_vix):
 
 # ==================== 渲染仪表盘 ====================
 def render_dashboard(data):
-    if not data: return
+    if not data:
+        st.error("数据加载失败")
+        return
 
     st.metric("更新时间", data['timestamp'])
     if debug_mode:
-        st.caption(f"数据点: VIX={len(data['vix_df'])}, TSLA={len(data['tsla_df'])}")
+        st.caption(f"VIX: {len(data['vix_df'])}, TSLA: {len(data['tsla_df'])}, SP500: {len(data['sp500_df'])}")
 
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("VIX", f"{data['vix']:.2f}" if data['vix'] else "N/A", f"{data['vix_change']:+.2f}%")
+        st.metric("VIX", f"{data['vix']:.2f}" if data['vix'] else "N/A", f"{data['vix_change']:+.2f}%" if data['vix'] else "")
     with col2:
-        st.metric("SP500", f"{data['sp500']:.2f}" if data['sp500'] else "N/A", f"{data['sp500_change']:+.2f}%")
+        st.metric("SP500", f"{data['sp500']:.2f}" if data['sp500'] else "N/A", f"{data['sp500_change']:+.2f}%" if data['sp500'] else "")
     with col3:
-        st.metric("TSLA", f"{data['tsla']:.2f}" if data['tsla'] else "N/A", f"{data['tsla_change']:+.2f}%")
+        st.metric("TSLA", f"{data['tsla']:.2f}" if data['tsla'] else "N/A", f"{data['tsla_change']:+.2f}%" if data['tsla'] else "")
 
     st.metric("SP500 趋势", f"{data['sp500_trend']:.2f}%")
 
@@ -180,10 +202,8 @@ def render_dashboard(data):
 
     # === 下一分钟预测 ===
     st.subheader("下一分钟预测")
-
     col_vix, col_tsla = st.columns(2)
 
-    # VIX 预测
     with col_vix:
         next_vix, vix_msg = predict_next_vix(data['vix_df'])
         if next_vix and data['vix']:
@@ -195,18 +215,14 @@ def render_dashboard(data):
         else:
             st.warning("VIX 预测失败")
 
-    # TSLA 预测
     with col_tsla:
         if predict_next_tsla_enabled and data['tsla']:
-            # ARIMA 预测
             pred_arima, arima_msg = predict_next_tsla_arima(data['tsla_df'])
-            # 相关性预测
             pred_corr = None
             corr_msg = ""
             if enable_corr_predict and next_vix:
                 pred_corr, corr_msg = predict_next_tsla_corr(data['vix_df'], data['tsla_df'], next_vix)
 
-            # 融合预测
             if use_fusion and pred_arima and pred_corr:
                 final_pred = fusion_weight_arima * pred_arima + (1 - fusion_weight_arima) * pred_corr
                 source = "融合预测"
@@ -245,7 +261,7 @@ def render_dashboard(data):
     elif "买入" in suggestion: st.success(suggestion)
     else: st.info(suggestion)
 
-    # 历史趋势
+    # SP500 趋势表
     try:
         hist = yf.Ticker("^GSPC").history(period=f"{sp500_trend_days}d")[['Close']].tail(5)
         st.dataframe(hist, use_container_width=True)
@@ -255,13 +271,13 @@ def render_dashboard(data):
 now = datetime.now()
 is_trading = now.weekday() < 5 and 9*60 + 30 <= now.hour*60 + now.minute <= 16*60
 if not is_trading:
-    st.warning("非交易时间，数据可能为空")
+    st.warning("非交易时间（美东 9:30-16:00），数据可能为空")
 
 if 'last_update' not in st.session_state:
     st.session_state.last_update = 0
 
 if time.time() - st.session_state.last_update >= refresh_interval:
-    with st.spinner("刷新数据..."):
+    with st.spinner("正在刷新数据..."):
         data = fetch_data()
     st.session_state.last_update = time.time()
     render_dashboard(data)
