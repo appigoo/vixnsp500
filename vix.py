@@ -25,14 +25,21 @@ sp500_trend_days = st.sidebar.slider("SP500 趋势天数", 5, 20, 10)
 
 # 预测参数
 st.sidebar.header("VIX 预测参数")
-enable_grid_search = st.sidebar.checkbox("启用动态参数优化 (ARIMA网格搜索)", value=True)
-p_max = st.sidebar.slider("ARIMA p 最大值", 0, 5, 2)
-d_max = st.sidebar.slider("ARIMA d 最大值", 0, 2, 1)
-q_max = st.sidebar.slider("ARIMA q 最大值", 0, 5, 2)
+enable_grid_search_vix = st.sidebar.checkbox("启用动态参数优化 (VIX ARIMA网格搜索)", value=True)
+p_max_vix = st.sidebar.slider("VIX ARIMA p 最大值", 0, 5, 2)
+d_max_vix = st.sidebar.slider("VIX ARIMA d 最大值", 0, 2, 1)
+q_max_vix = st.sidebar.slider("VIX ARIMA q 最大值", 0, 5, 2)
 
-# TSLA 预测参数
-st.sidebar.header("TSLA 预测参数")
-enable_tsla_predict = st.sidebar.checkbox("启用基于VIX-TSLA相关性的TSLA预测", value=True)
+# TSLA ARIMA 预测参数
+st.sidebar.header("TSLA ARIMA 预测参数")
+enable_grid_search_tsla = st.sidebar.checkbox("启用动态参数优化 (TSLA ARIMA网格搜索)", value=True)
+p_max_tsla = st.sidebar.slider("TSLA ARIMA p 最大值", 0, 5, 2)
+d_max_tsla = st.sidebar.slider("TSLA ARIMA d 最大值", 0, 2, 1)
+q_max_tsla = st.sidebar.slider("TSLA ARIMA q 最大值", 0, 5, 2)
+
+# TSLA 相关性预测参数
+st.sidebar.header("TSLA 相关性预测参数")
+enable_tsla_corr_predict = st.sidebar.checkbox("启用基于VIX-TSLA相关性的TSLA预测", value=True)
 corr_window = st.sidebar.slider("相关性计算窗口 (分钟)", 5, 30, 5)
 
 # 图表优化参数
@@ -160,6 +167,51 @@ def predict_next_vix(vix_df, enable_grid=True, p_max=2, d_max=1, q_max=2):
         except Exception as e:
             return None, f"预测错误: {str(e)}"
 
+# 函数：TSLA 下一分钟 ARIMA 预测（类似 VIX）
+def predict_next_tsla_arima(tsla_df, enable_grid=True, p_max=2, d_max=1, q_max=2):
+    if len(tsla_df) < 20:  # 需要足够数据点
+        return None, "数据不足，无法预测"
+    
+    tsla_series = tsla_df['TSLA'].dropna()
+    
+    if enable_grid:
+        # 动态网格搜索最佳ARIMA参数
+        p_range = range(0, p_max + 1)
+        d_range = range(0, d_max + 1)
+        q_range = range(0, q_max + 1)
+        param_combinations = list(product(p_range, d_range, q_range))
+        
+        best_aic = float("inf")
+        best_order = None
+        best_forecast = None
+        
+        for order in param_combinations:
+            try:
+                model = ARIMA(tsla_series, order=order)
+                fitted_model = model.fit()
+                if fitted_model.aic < best_aic:
+                    best_aic = fitted_model.aic
+                    best_order = order
+                    forecast = fitted_model.forecast(steps=1)
+                    best_forecast = forecast.iloc[0]
+            except:
+                continue
+        
+        if best_forecast is not None:
+            return best_forecast, f"最佳参数: ARIMA{best_order} (AIC: {best_aic:.2f})"
+        else:
+            return None, "网格搜索无有效模型"
+    else:
+        # 回退到固定参数
+        order = (1, 1, 1)
+        try:
+            model = ARIMA(tsla_series, order=order)
+            fitted_model = model.fit()
+            forecast = fitted_model.forecast(steps=1)
+            return forecast.iloc[0], f"固定参数: ARIMA{order}"
+        except Exception as e:
+            return None, f"预测错误: {str(e)}"
+
 # 函数：基于VIX-TSLA前N分钟升跌幅相关性预测下一分钟TSLA
 def predict_next_tsla(vix_df, tsla_df, next_vix, corr_window):
     if len(vix_df) < corr_window or len(tsla_df) < corr_window or next_vix is None:
@@ -243,7 +295,7 @@ while True:
             st.caption(f"TSLA 当日变化: {data['tsla_change_pct']:+.2f}% (相对于开盘)")
         
         # VIX 下一分钟预测（优化版）
-        next_vix, pred_msg = predict_next_vix(data['vix_df'], enable_grid_search, p_max, d_max, q_max)
+        next_vix, pred_msg = predict_next_vix(data['vix_df'], enable_grid_search_vix, p_max_vix, d_max_vix, q_max_vix)
         if next_vix is not None:
             delta = next_vix - data['vix']
             trend = "上涨" if delta > 0 else "下跌" if delta < 0 else "持平"
@@ -252,16 +304,26 @@ while True:
         else:
             st.warning(pred_msg)
         
-        # TSLA 下一分钟预测（基于VIX-TSLA相关性）
-        if enable_tsla_predict:
-            next_tsla, tsla_pred_msg = predict_next_tsla(data['vix_df'], data['tsla_df'], next_vix, corr_window)
-            if next_tsla is not None:
-                delta_tsla = next_tsla - data['tsla']
-                trend_tsla = "上涨" if delta_tsla > 0 else "下跌" if delta_tsla < 0 else "持平"
-                st.metric(f"下一分钟 TSLA 预测 ({trend_tsla})", f"{next_tsla:.2f}", f"{delta_tsla:+.2f}")
-                st.info(tsla_pred_msg)
+        # TSLA 下一分钟 ARIMA 预测（类似 VIX）
+        next_tsla_arima, tsla_arima_msg = predict_next_tsla_arima(data['tsla_df'], enable_grid_search_tsla, p_max_tsla, d_max_tsla, q_max_tsla)
+        if next_tsla_arima is not None:
+            delta_tsla_arima = next_tsla_arima - data['tsla']
+            trend_tsla_arima = "上涨" if delta_tsla_arima > 0 else "下跌" if delta_tsla_arima < 0 else "持平"
+            st.metric(f"下一分钟 TSLA ARIMA 预测 ({trend_tsla_arima})", f"{next_tsla_arima:.2f}", f"{delta_tsla_arima:+.2f}")
+            st.info(tsla_arima_msg)
+        else:
+            st.warning(tsla_arima_msg)
+        
+        # TSLA 下一分钟相关性预测（基于VIX-TSLA）
+        if enable_tsla_corr_predict:
+            next_tsla_corr, tsla_corr_msg = predict_next_tsla(data['vix_df'], data['tsla_df'], next_vix, corr_window)
+            if next_tsla_corr is not None:
+                delta_tsla_corr = next_tsla_corr - data['tsla']
+                trend_tsla_corr = "上涨" if delta_tsla_corr > 0 else "下跌" if delta_tsla_corr < 0 else "持平"
+                st.metric(f"下一分钟 TSLA 相关性预测 ({trend_tsla_corr})", f"{next_tsla_corr:.2f}", f"{delta_tsla_corr:+.2f}")
+                st.info(tsla_corr_msg)
             else:
-                st.warning(tsla_pred_msg)
+                st.warning(tsla_corr_msg)
         
         # 买卖建议
         suggestion = "持有"
@@ -297,8 +359,9 @@ st.markdown("""
 2. 运行程序：`streamlit run this_script.py`
 3. 程序将每 X 秒自动刷新数据（yfinance 提供近实时数据，延迟约 1-5 分钟）。
 4. **VIX 预测优化**：启用动态网格搜索以自动选择最佳 ARIMA 参数，提高预测准确度（基于当前数据的最低 AIC）。可调整参数范围以平衡速度与准确度。
-5. **TSLA 预测**：基于前N分钟VIX和TSLA升跌幅的相关性，使用线性回归（OLS）预测下一分钟TSLA价格。相关性计算使用Pearson系数，Beta为回归斜率。
-6. **图表改进**：添加可调节窗口期的移动平均线 (MA) 趋势线，帮助突出当前趋势方向。调整窗口期以平滑不同程度的趋势。
-7. **实时数据与升跌幅**：在指标和图表下方显示相对于当天开盘的实时升跌百分比，便于快速识别趋势。
-8. **注意**：这仅为教育性示例，非投资建议。实际交易需谨慎，考虑风险。预测模型基于历史短期相关性，市场波动性高，准确度有限。
+5. **TSLA ARIMA 预测**：新增独立 ARIMA 模型预测下一分钟 TSLA 股价，类似于 VIX 预测，显示趋势（上涨/下跌/持平）。
+6. **TSLA 相关性预测**：基于前N分钟VIX和TSLA升跌幅的相关性，使用线性回归（OLS）预测下一分钟TSLA价格。相关性计算使用Pearson系数，Beta为回归斜率。
+7. **图表改进**：添加可调节窗口期的移动平均线 (MA) 趋势线，帮助突出当前趋势方向。调整窗口期以平滑不同程度的趋势。
+8. **实时数据与升跌幅**：在指标和图表下方显示相对于当天开盘的实时升跌百分比，便于快速识别趋势。
+9. **注意**：这仅为教育性示例，非投资建议。实际交易需谨慎，考虑风险。预测模型基于历史短期数据，市场波动性高，准确度有限。
 """)
