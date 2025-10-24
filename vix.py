@@ -91,7 +91,7 @@ while True:
         if 'sp500' in data:
             recent_sp500 = yf.Ticker("^GSPC").history(period=f"{sp500_trend_days}d")
             st.subheader("SP500 最近趋势")
-            st.dataframe(recent_sp500.tail(5), use_container_width=True)
+            st.dataframe(recent_sp500.tail(5), width='stretch')
     
     time.sleep(refresh_interval)
     st.rerun()
