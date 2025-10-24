@@ -3,6 +3,8 @@ import yfinance as yf
 import pandas as pd
 import time
 from datetime import datetime
+import numpy as np
+from statsmodels.tsa.arima.model import ARIMA
 
 # 页面标题
 st.title("VIX & SP500 实时监控与 TSLA 买卖建议")
@@ -17,6 +19,10 @@ vix_threshold_high = st.sidebar.slider("VIX 高阈值（恐慌卖出）", 15.0, 
 vix_threshold_low = st.sidebar.slider("VIX 低阈值（安全买入）", 10.0, 25.0, 15.0)
 sp500_trend_days = st.sidebar.slider("SP500 趋势天数", 5, 20, 10)
 
+# 预测参数
+st.sidebar.header("VIX 预测参数")
+arima_order = (1, 1, 1)  # ARIMA(p,d,q) 参数，可调整
+
 # 简单策略说明
 st.sidebar.markdown("""
 ### 策略逻辑
@@ -28,9 +34,15 @@ st.sidebar.markdown("""
 # 函数：获取实时数据
 @st.cache_data(ttl=refresh_interval)
 def fetch_data(sp500_trend_days):
-    # 获取 VIX (^VIX)
+    # 获取 VIX (^VIX) - 分钟数据用于图表和预测
     vix = yf.Ticker("^VIX").history(period="1d", interval="1m")
-    current_vix = vix['Close'].iloc[-1] if not vix.empty else None
+    if not vix.empty:
+        current_vix = vix['Close'].iloc[-1]
+        vix_df = vix[['Close']].copy()
+        vix_df.columns = ['VIX']
+    else:
+        current_vix = None
+        vix_df = pd.DataFrame()
     
     # 获取 SP500 (^GSPC)
     sp500 = yf.Ticker("^GSPC").history(period=f"{sp500_trend_days + 1}d", interval="1d")
@@ -47,11 +59,29 @@ def fetch_data(sp500_trend_days):
     
     return {
         'vix': current_vix,
+        'vix_df': vix_df,
         'sp500': current_sp500,
         'sp500_trend': sp500_trend,
         'tsla': current_tsla,
         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
+
+# 函数：VIX 下一分钟预测
+def predict_next_vix(vix_df, order=arima_order):
+    if len(vix_df) < 10:  # 需要足够数据点
+        return None, "数据不足，无法预测"
+    
+    try:
+        # 使用 ARIMA 模型预测
+        model = ARIMA(vix_df['VIX'], order=order)
+        model_fit = model.fit()
+        forecast = model_fit.forecast(steps=1)
+        next_vix = forecast.iloc[0]
+        confidence_interval = model_fit.get_forecast(steps=1).conf_int().iloc[0].to_dict()
+        
+        return next_vix, f"预测值: {next_vix:.2f} (95% CI: {confidence_interval['lower VIX']:.2f} - {confidence_interval['upper VIX']:.2f})"
+    except Exception as e:
+        return None, f"预测错误: {str(e)}"
 
 # 主循环：实时更新
 placeholder = st.empty()
@@ -74,6 +104,20 @@ while True:
         
         # SP500 趋势
         st.metric("SP500 趋势 (%)", f"{data['sp500_trend']:.2f}%")
+        
+        # VIX 实时走势图
+        if not data['vix_df'].empty:
+            st.subheader("VIX 实时走势图 (最近1天分钟数据)")
+            st.line_chart(data['vix_df'])
+        
+        # VIX 下一分钟预测
+        next_vix, pred_msg = predict_next_vix(data['vix_df'])
+        if next_vix is not None:
+            delta = next_vix - data['vix']
+            trend = "上涨" if delta > 0 else "下跌" if delta < 0 else "持平"
+            st.metric(f"下一分钟 VIX 预测 ({trend})", f"{next_vix:.2f}", f"{delta:+.2f}")
+        else:
+            st.warning(pred_msg)
         
         # 买卖建议
         suggestion = "持有"
@@ -105,8 +149,9 @@ while True:
 st.markdown("---")
 st.markdown("""
 ### 运行说明
-1. 安装依赖：`pip install streamlit yfinance pandas`
+1. 安装依赖：`pip install streamlit yfinance pandas numpy statsmodels`
 2. 运行程序：`streamlit run this_script.py`
 3. 程序将每 X 秒自动刷新数据（yfinance 提供近实时数据，延迟约 1-5 分钟）。
-4. **注意**：这仅为教育性示例，非投资建议。实际交易需谨慎，考虑风险。
+4. **VIX 预测**：使用简单 ARIMA 模型基于最近分钟数据预测下一分钟值，仅供参考，非准确预测。
+5. **注意**：这仅为教育性示例，非投资建议。实际交易需谨慎，考虑风险。
 """)
