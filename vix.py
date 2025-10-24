@@ -48,20 +48,28 @@ def fetch_data(sp500_trend_days, ma_window):
     vix = yf.Ticker("^VIX").history(period="1d", interval="1m")
     if not vix.empty:
         current_vix = vix['Close'].iloc[-1]
+        vix_open = vix['Open'].iloc[0]
+        vix_change_pct = ((current_vix - vix_open) / vix_open) * 100 if vix_open != 0 else 0
         vix_df = vix[['Close']].copy()
         vix_df.columns = ['VIX']
         vix_df['VIX_MA'] = vix_df['VIX'].rolling(window=ma_window, min_periods=1).mean()
     else:
         current_vix = None
+        vix_change_pct = 0
         vix_df = pd.DataFrame()
     
     # 获取 SP500 (^GSPC) - 分钟数据用于图表
     sp500_min = yf.Ticker("^GSPC").history(period="1d", interval="1m")
     if not sp500_min.empty:
+        current_sp500_min = sp500_min['Close'].iloc[-1]
+        sp500_open = sp500_min['Open'].iloc[0]
+        sp500_change_pct = ((current_sp500_min - sp500_open) / sp500_open) * 100 if sp500_open != 0 else 0
         sp500_df = sp500_min[['Close']].copy()
         sp500_df.columns = ['SP500']
         sp500_df['SP500_MA'] = sp500_df['SP500'].rolling(window=ma_window, min_periods=1).mean()
     else:
+        current_sp500_min = None
+        sp500_change_pct = 0
         sp500_df = pd.DataFrame()
     
     # 获取 SP500 日数据用于趋势计算
@@ -77,21 +85,27 @@ def fetch_data(sp500_trend_days, ma_window):
     tsla = yf.Ticker("TSLA").history(period="1d", interval="1m")
     if not tsla.empty:
         current_tsla = tsla['Close'].iloc[-1]
+        tsla_open = tsla['Open'].iloc[0]
+        tsla_change_pct = ((current_tsla - tsla_open) / tsla_open) * 100 if tsla_open != 0 else 0
         tsla_df = tsla[['Close']].copy()
         tsla_df.columns = ['TSLA']
         tsla_df['TSLA_MA'] = tsla_df['TSLA'].rolling(window=ma_window, min_periods=1).mean()
     else:
         current_tsla = None
+        tsla_change_pct = 0
         tsla_df = pd.DataFrame()
     
     return {
         'vix': current_vix,
         'vix_df': vix_df,
+        'vix_change_pct': vix_change_pct,
         'sp500': current_sp500,
         'sp500_df': sp500_df,
+        'sp500_change_pct': sp500_change_pct,
         'sp500_trend': sp500_trend,
         'tsla': current_tsla,
         'tsla_df': tsla_df,
+        'tsla_change_pct': tsla_change_pct,
         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
 
@@ -150,14 +164,17 @@ while True:
         # 显示当前时间
         st.metric("更新时间", data['timestamp'])
         
-        # 显示指标
+        # 显示指标（包含实时升跌幅）
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("VIX 指数", f"{data['vix']:.2f}" if data['vix'] else "N/A")
+            st.metric("VIX 指数", f"{data['vix']:.2f}" if data['vix'] else "N/A", 
+                      f"{data['vix_change_pct']:+.2f}%" if data['vix'] else "N/A")
         with col2:
-            st.metric("SP500 指数", f"{data['sp500']:.2f}" if data['sp500'] else "N/A")
+            st.metric("SP500 指数", f"{data['sp500']:.2f}" if data['sp500'] else "N/A", 
+                      f"{data['sp500_change_pct']:+.2f}%" if data['sp500'] else "N/A")
         with col3:
-            st.metric("TSLA 股价", f"{data['tsla']:.2f}" if data['tsla'] else "N/A")
+            st.metric("TSLA 股价", f"{data['tsla']:.2f}" if data['tsla'] else "N/A", 
+                      f"{data['tsla_change_pct']:+.2f}%" if data['tsla'] else "N/A")
         
         # SP500 趋势
         st.metric("SP500 趋势 (%)", f"{data['sp500_trend']:.2f}%")
@@ -166,16 +183,19 @@ while True:
         if not data['vix_df'].empty:
             st.subheader(f"VIX 实时走势图 (最近1天分钟数据，MA{ma_window}趋势线)")
             st.line_chart(data['vix_df'])
+            st.caption(f"VIX 当日变化: {data['vix_change_pct']:+.2f}% (相对于开盘)")
         
         # SP500 实时走势图（添加MA趋势线）
         if not data['sp500_df'].empty:
             st.subheader(f"SP500 实时走势图 (最近1天分钟数据，MA{ma_window}趋势线)")
             st.line_chart(data['sp500_df'])
+            st.caption(f"SP500 当日变化: {data['sp500_change_pct']:+.2f}% (相对于开盘)")
         
         # TSLA 实时走势图（添加MA趋势线）
         if not data['tsla_df'].empty:
             st.subheader(f"TSLA 实时走势图 (最近1天分钟数据，MA{ma_window}趋势线)")
             st.line_chart(data['tsla_df'])
+            st.caption(f"TSLA 当日变化: {data['tsla_change_pct']:+.2f}% (相对于开盘)")
         
         # VIX 下一分钟预测（优化版）
         next_vix, pred_msg = predict_next_vix(data['vix_df'], enable_grid_search, p_max, d_max, q_max)
@@ -222,5 +242,6 @@ st.markdown("""
 3. 程序将每 X 秒自动刷新数据（yfinance 提供近实时数据，延迟约 1-5 分钟）。
 4. **VIX 预测优化**：启用动态网格搜索以自动选择最佳 ARIMA 参数，提高预测准确度（基于当前数据的最低 AIC）。可调整参数范围以平衡速度与准确度。
 5. **图表改进**：添加可调节窗口期的移动平均线 (MA) 趋势线，帮助突出当前趋势方向。调整窗口期以平滑不同程度的趋势。
-6. **注意**：这仅为教育性示例，非投资建议。实际交易需谨慎，考虑风险。ARIMA 适合短期预测，但市场波动性高，准确度有限。
+6. **实时数据与升跌幅**：在指标和图表下方显示相对于当天开盘的实时升跌百分比，便于快速识别趋势。
+7. **注意**：这仅为教育性示例，非投资建议。实际交易需谨慎，考虑风险。ARIMA 适合短期预测，但市场波动性高，准确度有限。
 """)
